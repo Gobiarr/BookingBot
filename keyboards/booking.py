@@ -7,9 +7,7 @@ from aiogram.types import (
 )
 
 
-WEEKDAYS = [
-    "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"
-]
+WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
 def get_services_keyboard(
@@ -21,10 +19,7 @@ def get_services_keyboard(
         buttons.append(
             [
                 InlineKeyboardButton(
-                    text=(
-                        f"{service['name']} — "
-                        f"{service['price']} руб."
-                    ),
+                    text=f"{service['name']} — {service['price']} руб.",
                     callback_data=f"service:{service['id']}",
                 )
             ]
@@ -95,3 +90,28 @@ def get_confirmation_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def get_bookings_keyboard(
+    bookings: list[dict],
+) -> InlineKeyboardMarkup:
+    buttons = []
+
+    for booking in bookings:
+        starts_at = booking["starts_at"]
+        date_text = starts_at[:10]
+        time_text = starts_at[11:16]
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"❌ #{booking['booking_id']} — "
+                        f"{date_text} {time_text}"
+                    ),
+                    callback_data=f"cancel_booking:{booking['booking_id']}",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
