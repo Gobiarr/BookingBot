@@ -7,6 +7,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message
 
 from config import BOT_TOKEN
+from database.db import init_db, get_active_services
 from keyboards.main_menu import get_main_menu
 
 
@@ -31,17 +32,43 @@ async def cmd_start(message: Message) -> None:
 
 @dp.message()
 async def handle_menu(message: Message) -> None:
+    if not message.text:
+        return
+
     if message.text == "📋 Услуги":
-        await message.answer("📋 Раздел услуг. Скоро здесь появится список услуг.")
+        services = await get_active_services()
+
+        if not services:
+            await message.answer("Пока нет доступных услуг.")
+            return
+
+        response = "📋 Наши услуги\n\n"
+
+        for service in services:
+            response += (
+                f"✂️ {service['name']}\n"
+                f"💬 {service['description']}\n"
+                f"💰 Цена: {service['price']} руб.\n"
+                f"⏱ Длительность: "
+                f"{service['duration_minutes']} мин.\n\n"
+            )
+
+        await message.answer(response)
 
     elif message.text == "📅 Записаться":
-        await message.answer("📅 Начнём запись на услугу на следующем этапе.")
+        await message.answer(
+            "📅 Скоро здесь можно будет выбрать услугу и время."
+        )
 
     elif message.text == "🗓 Мои записи":
-        await message.answer("🗓 Здесь будут отображаться твои записи.")
+        await message.answer(
+            "🗓 Здесь будут отображаться твои записи."
+        )
 
     elif message.text == "❌ Отменить запись":
-        await message.answer("❌ Здесь можно будет отменить свою запись.")
+        await message.answer(
+            "❌ Здесь можно будет отменить своё бронирование."
+        )
 
     else:
         await message.answer(
@@ -53,7 +80,11 @@ async def main() -> None:
     logging.info("BookingBot запускается...")
 
     try:
+        await init_db()
+        logging.info("База данных готова.")
+
         await dp.start_polling(bot)
+
     finally:
         await bot.session.close()
         logging.info("BookingBot остановлен.")
