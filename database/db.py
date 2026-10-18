@@ -1,14 +1,18 @@
 
 import aiosqlite
 
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
 DB_PATH = Path(__file__).resolve().parent.parent / "bookingbot.db"
 
+WORKING_HOURS = [10, 12, 14, 16, 18]
+SLOT_DURATION_HOURS = 2
+
 
 async def init_db() -> None:
-    """Создаёт таблицы и добавляет демонстрационные услуги."""
+    """Создаёт таблицы, услуги и расписание на ближайшие 7 дней."""
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA foreign_keys = ON")
@@ -63,10 +67,8 @@ async def init_db() -> None:
 
                 FOREIGN KEY (user_id)
                     REFERENCES users(user_id),
-
                 FOREIGN KEY (service_id)
                     REFERENCES services(id),
-
                 FOREIGN KEY (slot_id)
                     REFERENCES slots(id)
             );
@@ -112,11 +114,40 @@ async def init_db() -> None:
             ],
         )
 
+        today = date.today()
+
+        for day_offset in range(7):
+            current_date = today + timedelta(days=day_offset)
+
+            for hour in WORKING_HOURS:
+                starts_at = datetime(
+                    current_date.year,
+                    current_date.month,
+                    current_date.day,
+                    hour,
+                    0,
+                )
+                ends_at = starts_at + timedelta(
+                    hours=SLOT_DURATION_HOURS
+                )
+
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO slots
+                        (starts_at, ends_at, is_available)
+                    VALUES (?, ?, 1)
+                    """,
+                    (
+                        starts_at.strftime("%Y-%m-%d %H:%M"),
+                        ends_at.strftime("%Y-%m-%d %H:%M"),
+                    ),
+                )
+
         await db.commit()
 
 
 async def get_active_services() -> list[dict]:
-    """Возвращает все активные услуги."""
+    """Возвращает активные услуги."""
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -134,3 +165,162 @@ async def get_active_services() -> list[dict]:
         await cursor.close()
 
         return [dict(row) for row in rows]
+
+
+async def get_available_dates() -> list[str]:
+    """Возвращает даты, на которые осталось свободное время."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT DISTINCT substr(starts_at, 1, 10) AS booking_date
+            FROM slots
+            WHERE is_available = 1
+              AND starts_at >= ?
+            ORDER BY booking_date
+            """,
+            (datetime.now().strftime("%Y-%m-%d %H:%M"),),
+        )
+
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        return [row[0] for row in rows]
+
+
+async def get_available_slots(booking_date: str) -> list[dict]:
+    """Возвращает свободные временные слоты на выбранную дату."""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        cursor = await db.execute(
+            """
+            SELECT id, starts_at, ends_at
+            FROM slots
+            WHERE is_available = 1
+              AND substr(starts_at, 1, 10) = ?
+              AND starts_at >= ?
+            ORDER BY starts_at
+            """,
+            (
+                booking_date,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+            ),
+        )
+
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        return [dict(row) for row in rows]
+
+
+async def create_booking(
+    user_id: int,
+    username: str | None,
+    telegram_full_name: str,
+    service_id: int,
+    slot_id: int,
+    client_name: str,
+    phone: str,
+) -> int | None:
+    """
+    Сохраняет запись.
+    Возвращает номер записи или None, если слот уже занят.
+    """
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA foreign_keys = ON")
+
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM slots
+                WHERE id = ?
+                  AND is_available = 1
+                  AND starts_at >= ?
+                """,
+                (
+                    slot_id,
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                ),
+            )
+            slot = await cursor.fetchone()
+            await cursor.close()
+
+            if slot is None:
+                await db.rollback()
+                return None
+
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM services
+                WHERE id = ? AND is_active = 1
+                """,
+                (service_id,),
+            )
+            service = await cursor.fetchone()
+            await cursor.close()
+
+            if service is None:
+                await db.rollback()
+                return None
+
+            await db.execute(
+                """
+                INSERT INTO users (user_id, username, full_name, phone)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username,
+                    full_name = excluded.full_name,
+                    phone = excluded.phone
+                """,
+                (
+                    user_id,
+                    username,
+                    telegram_full_name,
+                    phone,
+                ),
+            )
+
+            cursor = await db.execute(
+                """
+                INSERT INTO bookings
+                    (user_id, service_id, slot_id, client_name, phone)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    service_id,
+                    slot_id,
+                    client_name,
+                    phone,
+                ),
+            )
+
+            booking_id = cursor.lastrowid
+            await cursor.close()
+
+            await db.execute(
+                """
+                UPDATE slots
+                SET is_available = 0
+                WHERE id = ?
+                """,
+                (slot_id,),
+            )
+
+            await db.commit()
+            return booking_id
+
+        except aiosqlite.IntegrityError:
+            await db.rollback()
+            return None
+
+        except Exception:
+            await db.rollback()
+            raise
